@@ -75,6 +75,18 @@ public class DatabaseHelper
             }
             catch { tx.Rollback(); throw; }
         }
+
+        // Seed new settings for existing installations — no-op if already present.
+        var accessSalt = SecurityHelper.GenerateSalt();
+        var accessHash = SecurityHelper.HashPin("pool1234", accessSalt);
+        using var newDefaults = new SqliteCommand(@"
+            INSERT OR IGNORE INTO Settings (Key, Value) VALUES ('access_hash', @AH);
+            INSERT OR IGNORE INTO Settings (Key, Value) VALUES ('access_salt', @AS);
+            INSERT OR IGNORE INTO Settings (Key, Value) VALUES ('max_duration_hours', '2.0');
+        ", conn);
+        newDefaults.Parameters.AddWithValue("@AH", accessHash);
+        newDefaults.Parameters.AddWithValue("@AS", accessSalt);
+        newDefaults.ExecuteNonQuery();
     }
 
     public string GetSetting(string key, string defaultValue = "")
@@ -125,6 +137,42 @@ public class DatabaseHelper
         try
         {
             foreach (var (key, val) in new[] { ("admin_hash", hash), ("admin_salt", salt) })
+            {
+                using var cmd = new SqliteCommand(
+                    "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@K, @V)", conn, tx);
+                cmd.Parameters.AddWithValue("@K", key);
+                cmd.Parameters.AddWithValue("@V", val);
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
+    }
+
+    public double GetMaxDurationHours() =>
+        double.TryParse(GetSetting("max_duration_hours", "2.0"),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : 2.0;
+
+    public void SaveMaxDurationHours(double hours)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        using var cmd = new SqliteCommand(
+            "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@K, @V)", conn);
+        cmd.Parameters.AddWithValue("@K", "max_duration_hours");
+        cmd.Parameters.AddWithValue("@V", hours.ToString("F1", System.Globalization.CultureInfo.InvariantCulture));
+        cmd.ExecuteNonQuery();
+    }
+
+    public void SaveAccessCredentials(string hash, string salt)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            foreach (var (key, val) in new[] { ("access_hash", hash), ("access_salt", salt) })
             {
                 using var cmd = new SqliteCommand(
                     "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@K, @V)", conn, tx);

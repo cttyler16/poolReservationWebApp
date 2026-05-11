@@ -2,6 +2,8 @@
 @rendermode InteractiveServer
 @inject DatabaseHelper Db
 @inject NavigationManager Nav
+@inject LoginRateLimiter Limiter
+@inject IHttpContextAccessor HttpCtx
 
 <PageTitle>Manage My Reservation</PageTitle>
 
@@ -102,9 +104,17 @@
     private string _code = "";
     private string _pin  = "";
     private string _lookupError = "";
+    private string _clientIp    = "unknown";
     private Reservation? _reservation;
     private bool _showConfirmCancel;
     private bool _cancelled;
+
+    protected override void OnInitialized()
+    {
+        _clientIp = HttpCtx.HttpContext?.Connection.RemoteIpAddress?.ToString()
+                    ?? HttpCtx.HttpContext?.Request.Headers["X-Forwarded-For"].FirstOrDefault()
+                    ?? "unknown";
+    }
 
     private void Lookup()
     {
@@ -112,11 +122,28 @@
         if (string.IsNullOrWhiteSpace(_code)) { _lookupError = "Please enter your confirmation code."; return; }
         if (string.IsNullOrWhiteSpace(_pin))  { _lookupError = "Please enter your PIN."; return; }
 
-        var r = Db.GetByConfirmationCode(_code);
-        if (r is null) { _lookupError = "Confirmation code not found. Please check and try again."; return; }
-        if (!SecurityHelper.VerifyPin(_pin, r.PinSalt, r.PinHash))
-        { _lookupError = "Incorrect PIN. Please try again."; _pin = ""; return; }
+        var key = $"pin:{_clientIp}";
+        if (Limiter.IsLocked(key))
+        {
+            var mins = (int)Math.Ceiling(Limiter.LockoutRemaining(key).TotalMinutes);
+            _lookupError = $"Too many failed attempts. Try again in {mins} minute{(mins == 1 ? "" : "s")}.";
+            _pin = "";
+            return;
+        }
 
+        var r = Db.GetByConfirmationCode(_code);
+        if (r is null || !SecurityHelper.VerifyPin(_pin, r.PinSalt, r.PinHash))
+        {
+            Limiter.RecordFailure(key);
+            var remaining = Limiter.AttemptsRemaining(key);
+            _lookupError = remaining > 0
+                ? $"Code or PIN not found. {remaining} attempt{(remaining == 1 ? "" : "s")} remaining."
+                : $"Too many failed attempts. Try again in {(int)Math.Ceiling(Limiter.LockoutRemaining(key).TotalMinutes)} minutes.";
+            _pin = "";
+            return;
+        }
+
+        Limiter.RecordSuccess(key);
         _reservation = r;
     }
 

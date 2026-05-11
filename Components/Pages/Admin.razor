@@ -3,6 +3,8 @@
 @inject DatabaseHelper Db
 @inject AdminSessionService AdminSession
 @inject NavigationManager Nav
+@inject LoginRateLimiter Limiter
+@inject IHttpContextAccessor HttpCtx
 
 <PageTitle>Admin Panel</PageTitle>
 
@@ -130,6 +132,40 @@ else
 
                 <hr style="margin:20px 0;" />
 
+                <!-- Max reservation duration -->
+                <div style="font-weight:700;color:#374151;margin-bottom:10px;">Max Reservation Duration</div>
+                <div style="max-width:200px;">
+                    <label class="form-label-text" style="margin-top:0;">Maximum slot length a customer can book</label>
+                    <select class="form-select" @onchange="e => { if (double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d)) _maxDuration = d; }">
+                        @foreach (var (label, val) in _durationOptions)
+                        {
+                            <option value="@val.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)"
+                                    selected="@(_maxDuration == val)">@label</option>
+                        }
+                    </select>
+                </div>
+                @if (!string.IsNullOrEmpty(_maxDurError))   { <div class="banner banner-error" style="margin-top:8px;">@_maxDurError</div> }
+                @if (!string.IsNullOrEmpty(_maxDurSuccess)) { <div class="banner banner-success" style="margin-top:8px;">@_maxDurSuccess</div> }
+                <button class="btn-pool" style="margin-top:6px;" @onclick="SaveMaxDuration">Save Max Duration</button>
+
+                <hr style="margin:20px 0;" />
+
+                <!-- Customer access code -->
+                <div style="font-weight:700;color:#374151;margin-bottom:10px;">Customer Access Code</div>
+                <p style="font-size:0.82rem;color:#6B7280;margin:0 0 10px;">
+                    Customers must enter this code before they can make a reservation.
+                    Share it privately. Default is <code>pool1234</code>.
+                </p>
+                <label class="form-label-text" style="margin-top:0;">New Access Code</label>
+                <input class="form-input" type="password" @bind="_acNew" placeholder="At least 4 characters" />
+                <label class="form-label-text">Confirm New Access Code</label>
+                <input class="form-input" type="password" @bind="_acConfirm" placeholder="Repeat access code" />
+                @if (!string.IsNullOrEmpty(_acError))   { <div class="banner banner-error" style="margin-top:8px;">@_acError</div> }
+                @if (!string.IsNullOrEmpty(_acSuccess)) { <div class="banner banner-success" style="margin-top:8px;">@_acSuccess</div> }
+                <button class="btn-pool" style="margin-top:10px;" @onclick="ChangeAccessCode">Set Access Code</button>
+
+                <hr style="margin:20px 0;" />
+
                 <!-- Change password -->
                 <div style="font-weight:700;color:#374151;margin-bottom:10px;">Change Admin Password</div>
                 <label class="form-label-text" style="margin-top:0;">Current Password</label>
@@ -150,6 +186,7 @@ else
     // Login
     private string _loginPassword = "";
     private string _loginError    = "";
+    private string _clientIp      = "unknown";
 
     // Tabs
     private string _tab = "schedule";
@@ -173,6 +210,18 @@ else
     private string _pwError   = "";
     private string _pwSuccess = "";
 
+    // Settings tab – max duration
+    private double _maxDuration = 2.0;
+    private List<(string label, double val)> _durationOptions = [];
+    private string _maxDurError   = "";
+    private string _maxDurSuccess = "";
+
+    // Settings tab – customer access code
+    private string _acNew     = "";
+    private string _acConfirm = "";
+    private string _acError   = "";
+    private string _acSuccess = "";
+
     private bool _showDefaultPwWarning;
 
     private string SchedDayLabel => _schedDate.Date == DateTime.Today ? "Today"
@@ -181,15 +230,32 @@ else
 
     protected override void OnInitialized()
     {
+        _clientIp = HttpCtx.HttpContext?.Connection.RemoteIpAddress?.ToString()
+                    ?? HttpCtx.HttpContext?.Request.Headers["X-Forwarded-For"].FirstOrDefault()
+                    ?? "unknown";
         if (AdminSession.IsLoggedIn) InitAdminData();
     }
 
     private void InitAdminData()
     {
         (_poolOpen, _poolClose) = Db.GetPoolHours();
+        _maxDuration = Db.GetMaxDurationHours();
         BuildHourOptions();
+        BuildDurationOptions();
         LoadSchedule();
         CheckDefaultPassword();
+    }
+
+    private void BuildDurationOptions()
+    {
+        _durationOptions.Clear();
+        for (double h = 0.5; h <= 4.0 + 0.001; h += 0.5)
+        {
+            var label = h == Math.Floor(h)
+                ? $"{(int)h} {(h == 1.0 ? "hour" : "hours")}"
+                : $"{h:F1} hours";
+            _durationOptions.Add((label, h));
+        }
     }
 
     private void CheckDefaultPassword()
@@ -223,6 +289,15 @@ else
         _loginError = "";
         if (string.IsNullOrEmpty(_loginPassword)) { _loginError = "Please enter the admin password."; return; }
 
+        var key = $"admin:{_clientIp}";
+        if (Limiter.IsLocked(key))
+        {
+            var mins = (int)Math.Ceiling(Limiter.LockoutRemaining(key).TotalMinutes);
+            _loginError = $"Too many failed attempts. Try again in {mins} minute{(mins == 1 ? "" : "s")}.";
+            _loginPassword = "";
+            return;
+        }
+
         var hash = Db.GetSetting("admin_hash");
         var salt = Db.GetSetting("admin_salt");
 
@@ -231,13 +306,18 @@ else
 
         if (SecurityHelper.VerifyPin(_loginPassword, salt, hash))
         {
+            Limiter.RecordSuccess(key);
             AdminSession.Login();
             _loginPassword = "";
             InitAdminData();
         }
         else
         {
-            _loginError = "Incorrect password. Please try again.";
+            Limiter.RecordFailure(key);
+            var remaining = Limiter.AttemptsRemaining(key);
+            _loginError = remaining > 0
+                ? $"Incorrect password. {remaining} attempt{(remaining == 1 ? "" : "s")} remaining."
+                : $"Too many failed attempts. Try again in {(int)Math.Ceiling(Limiter.LockoutRemaining(key).TotalMinutes)} minutes.";
             _loginPassword = "";
         }
     }
@@ -256,7 +336,8 @@ else
     private void SetTab(string tab)
     {
         _tab = tab;
-        _hoursError = _hoursSuccess = _pwError = _pwSuccess = "";
+        _hoursError = _hoursSuccess = _pwError = _pwSuccess =
+        _maxDurError = _maxDurSuccess = _acError = _acSuccess = "";
     }
 
     // ── Schedule ──
@@ -318,5 +399,29 @@ else
         _pwCurrent = _pwNew = _pwConfirm = "";
         _pwSuccess = "Password changed successfully.";
         _showDefaultPwWarning = false;
+    }
+
+    // ── Settings – max duration ──
+    private void SaveMaxDuration()
+    {
+        _maxDurError = _maxDurSuccess = "";
+        Db.SaveMaxDurationHours(_maxDuration);
+        _maxDurSuccess = "Max duration saved successfully.";
+    }
+
+    // ── Settings – customer access code ──
+    private void ChangeAccessCode()
+    {
+        _acError = _acSuccess = "";
+        if (string.IsNullOrEmpty(_acNew))    { _acError = "New access code cannot be empty."; return; }
+        if (_acNew.Length < 4)               { _acError = "Access code must be at least 4 characters."; return; }
+        if (_acNew != _acConfirm)            { _acError = "Access codes do not match."; return; }
+
+        var salt = SecurityHelper.GenerateSalt();
+        var hash = SecurityHelper.HashPin(_acNew, salt);
+        Db.SaveAccessCredentials(hash, salt);
+
+        _acNew = _acConfirm = "";
+        _acSuccess = "Access code updated successfully.";
     }
 }

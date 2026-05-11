@@ -75,6 +75,11 @@
 
                     <div class="day-col @(isToday ? "today-col" : "")" style="height:@(TotalMin)px;">
 
+                        @if (date.Date >= DateTime.Today)
+                        {
+                            <div class="cal-click-overlay" @onclick="e => OnCalendarClick(date, e)"></div>
+                        }
+
                         <!-- Hour/half-hour lines -->
                         @for (int h = StartHour; h <= EndHour; h++)
                         {
@@ -205,4 +210,18 @@
     }
 
     private void GoAdmin() => Nav.NavigateTo("/admin");
+
+    private void OnCalendarClick(DateTime date, MouseEventArgs e)
+    {
+        // 1 pixel = 1 minute (layout is TotalMin px tall)
+        var rawMinutes = (int)e.OffsetY;
+        rawMinutes = (rawMinutes / 30) * 30; // snap to 30-min boundary
+
+        var startTime = PoolOpen.Add(TimeSpan.FromMinutes(rawMinutes));
+        var maxStart  = PoolClose - TimeSpan.FromMinutes(30);
+        if (startTime < PoolOpen) startTime = PoolOpen;
+        if (startTime > maxStart) startTime = maxStart;
+
+        Nav.NavigateTo($"/reserve?date={date.ToString("yyyy-MM-dd")}&start={startTime.ToString(@"hh\:mm")}");
+    }
 }

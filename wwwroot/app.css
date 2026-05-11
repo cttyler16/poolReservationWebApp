@@ -151,8 +151,17 @@ html, body {
     border-top: 1px dashed rgba(203,213,225,0.45);
 }
 
-/* ── Reservation block ── */
-.res-block {
+/* ── Calendar click overlay ── */
+.cal-click-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    cursor: pointer;
+}
+.cal-click-overlay:hover {
+    background: rgba(0, 150, 199, 0.07);
+}
+
     position: absolute;
     left: 2px; right: 2px;
     background: var(--rose-bg);

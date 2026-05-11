@@ -3,8 +3,36 @@
 @inject DatabaseHelper Db
 @inject ConfirmationState ConfState
 @inject NavigationManager Nav
+@inject CustomerSessionService CustomerSession
+@inject LoginRateLimiter Limiter
+@inject IHttpContextAccessor HttpCtx
 
 <PageTitle>Reserve a Time Slot</PageTitle>
+
+@if (!CustomerSession.IsAuthenticated)
+{
+    <div class="form-card">
+        <div class="form-header">
+            <h2>🔒 Access Required</h2>
+            <p>Enter the access code provided to you to make a reservation</p>
+        </div>
+        <div class="form-body">
+            <label class="form-label-text">Access Code</label>
+            <input class="form-input" type="password" @bind="_accessCode"
+                   @onkeydown="OnAccessKeyDown" placeholder="Enter access code" />
+            @if (!string.IsNullOrEmpty(_accessError))
+            {
+                <div class="banner banner-error" style="margin-top:10px;">@_accessError</div>
+            }
+        </div>
+        <div class="form-footer">
+            <button class="btn-pool-secondary" @onclick='() => Nav.NavigateTo("/")'>Cancel</button>
+            <button class="btn-pool" @onclick="TryAccess">Continue</button>
+        </div>
+    </div>
+}
+else
+{
 
 <div class="form-card">
     <!-- Header -->
@@ -38,9 +66,11 @@
             <div style="flex:1;">
                 <label class="form-label-text">Duration *</label>
                 <select class="form-select" @onchange="OnDurationChanged">
-                    <option value="1.0"  selected="@(_durationHours == 1.0)">1 hour</option>
-                    <option value="1.5"  selected="@(_durationHours == 1.5)">1.5 hours</option>
-                    <option value="2.0"  selected="@(_durationHours == 2.0)">2 hours</option>
+                    @foreach (var (label, val) in _durationOptions)
+                    {
+                        <option value="@val.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)"
+                                selected="@(_durationHours == val)">@label</option>
+                    }
                 </select>
             </div>
         </div>
@@ -118,10 +148,75 @@
         <button class="btn-pool" @onclick="Submit" disabled="@(!CanSubmit)">Confirm Reservation ✓</button>
     </div>
 </div>
+}
 
 @code {
+    // Access gate
+    private string _accessCode  = "";
+    private string _accessError = "";
+    private string _clientIp    = "unknown";
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "date")]
+    public string? QueryDate { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "start")]
+    public string? QueryStart { get; set; }
+
+    private async Task OnAccessKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") TryAccess();
+    }
+
+    private void TryAccess()
+    {
+        _accessError = "";
+        if (string.IsNullOrWhiteSpace(_accessCode))
+        {
+            _accessError = "Please enter the access code.";
+            return;
+        }
+
+        var key = $"access:{_clientIp}";
+        if (Limiter.IsLocked(key))
+        {
+            var mins = (int)Math.Ceiling(Limiter.LockoutRemaining(key).TotalMinutes);
+            _accessError = $"Too many failed attempts. Try again in {mins} minute{(mins == 1 ? "" : "s")}.";
+            _accessCode  = "";
+            return;
+        }
+
+        var hash = Db.GetSetting("access_hash");
+        var salt = Db.GetSetting("access_salt");
+        if (string.IsNullOrEmpty(hash) || string.IsNullOrEmpty(salt) ||
+            !SecurityHelper.VerifyPin(_accessCode, salt, hash))
+        {
+            Limiter.RecordFailure(key);
+            var remaining = Limiter.AttemptsRemaining(key);
+            _accessError = remaining > 0
+                ? $"Incorrect access code. {remaining} attempt{(remaining == 1 ? "" : "s")} remaining."
+                : $"Too many failed attempts. Try again in {(int)Math.Ceiling(Limiter.LockoutRemaining(key).TotalMinutes)} minutes.";
+            _accessCode = "";
+            return;
+        }
+
+        Limiter.RecordSuccess(key);
+        CustomerSession.Authenticate();
+        // Initialize form data now that we are authenticated
+        (PoolOpen, PoolClose) = Db.GetPoolHours();
+        _maxDuration = Db.GetMaxDurationHours();
+        BuildDurationOptions();
+        BuildStartOptions();
+        ApplyQueryParams();
+        RefreshSchedule();
+        UpdateEndTime();
+    }
+
+    // Reservation form
     private TimeSpan PoolOpen;
     private TimeSpan PoolClose;
+    private double   _maxDuration = 2.0;
 
     private DateTime _selectedDate = DateTime.Today;
     private TimeSpan _startTime;
@@ -136,23 +231,68 @@
     private string _email       = "";
     private string _errorMsg    = "";
 
-    private List<(string label, TimeSpan ts)> _startOptions = [];
-    private List<ScheduleBlock> _scheduleBlocks = [];
+    private List<(string label, TimeSpan ts)>    _startOptions    = [];
+    private List<(string label, double val)>      _durationOptions = [];
+    private List<ScheduleBlock>                   _scheduleBlocks  = [];
 
     private bool CanSubmit => !_hasConflict && !_overClose && _endTime > _startTime;
 
     protected override void OnInitialized()
     {
-        (PoolOpen, PoolClose) = Db.GetPoolHours();
-        BuildStartOptions();
-        RefreshSchedule();
-        UpdateEndTime();
+        _clientIp = HttpCtx.HttpContext?.Connection.RemoteIpAddress?.ToString()
+                    ?? HttpCtx.HttpContext?.Request.Headers["X-Forwarded-For"].FirstOrDefault()
+                    ?? "unknown";
+
+        // If already authenticated (e.g. navigated away and back), load form data.
+        if (CustomerSession.IsAuthenticated)
+        {
+            (PoolOpen, PoolClose) = Db.GetPoolHours();
+            _maxDuration = Db.GetMaxDurationHours();
+            BuildDurationOptions();
+            BuildStartOptions();
+            ApplyQueryParams();
+            RefreshSchedule();
+            UpdateEndTime();
+        }
+    }
+
+    private void ApplyQueryParams()
+    {
+        if (!string.IsNullOrEmpty(QueryDate) &&
+            DateTime.TryParse(QueryDate, out var d) &&
+            d >= DateTime.Today && d <= DateTime.Today.AddDays(14))
+        {
+            _selectedDate = d;
+        }
+
+        if (!string.IsNullOrEmpty(QueryStart) &&
+            TimeSpan.TryParse(QueryStart, out var ts))
+        {
+            // Snap to the nearest available start option
+            var match = _startOptions.FirstOrDefault(o => o.ts == ts);
+            if (match != default) _startTime = match.ts;
+        }
+    }
+
+    private void BuildDurationOptions()
+    {
+        _durationOptions.Clear();
+        for (double h = 0.5; h <= _maxDuration + 0.001; h += 0.5)
+        {
+            var label = h == Math.Floor(h)
+                ? $"{(int)h} {(h == 1.0 ? "hour" : "hours")}"
+                : $"{h:F1} hours";
+            _durationOptions.Add((label, h));
+        }
+        // Clamp current selection to the allowed max
+        if (_durationHours > _maxDuration)
+            _durationHours = _durationOptions.Last().val;
     }
 
     private void BuildStartOptions()
     {
         _startOptions.Clear();
-        var latest = PoolClose - TimeSpan.FromHours(1);
+        var latest = PoolClose - TimeSpan.FromHours(0.5);
         var t = PoolOpen;
         while (t <= latest)
         {
@@ -166,7 +306,6 @@
     {
         if (DateTime.TryParse(e.Value?.ToString(), out var d))
         {
-            // Clamp to allowed range
             if (d < DateTime.Today) d = DateTime.Today;
             if (d > DateTime.Today.AddDays(14)) d = DateTime.Today.AddDays(14);
             _selectedDate = d;
@@ -233,7 +372,6 @@
         if (!System.Text.RegularExpressions.Regex.IsMatch(_email.Trim(), @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
             { _errorMsg = "Please enter a valid email address."; return; }
 
-        // Re-check conflict at submit time
         if (Db.HasConflict(_selectedDate, _startTime, _endTime))
         {
             _errorMsg = "This slot was just taken. Please pick a different time.";

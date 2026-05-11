@@ -6,8 +6,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<DatabaseHelper>();
+builder.Services.AddSingleton<LoginRateLimiter>();
 builder.Services.AddScoped<AdminSessionService>();
+builder.Services.AddScoped<CustomerSessionService>();
 builder.Services.AddScoped<ConfirmationState>();
 
 var app = builder.Build();
