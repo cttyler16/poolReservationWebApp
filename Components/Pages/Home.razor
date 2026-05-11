@@ -1,0 +1,208 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@inject DatabaseHelper Db
+@inject NavigationManager Nav
+
+<PageTitle>Pool Reservation System</PageTitle>
+
+<!-- Header -->
+<div class="app-header">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between">
+        <div>
+            <h1>🏊 Pool Reservation System</h1>
+            <p>One family at a time &nbsp;·&nbsp; Maximum 2 hours per session</p>
+        </div>
+        <button class="btn-admin-header" @onclick="GoAdmin">🔒 Admin</button>
+    </div>
+</div>
+
+<!-- Week navigation -->
+<div class="week-nav">
+    <div class="nav-left">
+        <button class="btn-pool-secondary" style="width:34px;padding:6px 0;"
+                @onclick="PrevWeek" disabled="@(!CanGoPrev)">&#10094;</button>
+        <button class="btn-pool-secondary" style="padding:6px 14px;"
+                @onclick="GoToday">Today</button>
+        <button class="btn-pool-secondary" style="width:34px;padding:6px 0;"
+                @onclick="NextWeek" disabled="@(!CanGoNext)">&#10095;</button>
+        <span class="week-label" style="margin-left:10px;">@WeekLabel</span>
+    </div>
+    <span class="pool-hours-label">@PoolHoursLabel</span>
+</div>
+
+<!-- Calendar card -->
+<div class="calendar-card" style="height:calc(100vh - 280px);min-height:320px;">
+    <div class="calendar-card-inner">
+
+        <!-- Day headers -->
+        <div class="day-headers">
+            <div class="day-header-gutter"></div>
+            @for (int c = 0; c < 7; c++)
+            {
+                var date  = _weekStart.AddDays(c);
+                bool isToday = date.Date == DateTime.Today;
+                <div class="day-header-col">
+                    <div class="day-abbr @(isToday ? "today-text" : "")">@date.ToString("ddd").ToUpper()</div>
+                    <div class="day-num-wrap">
+                        <div class="day-num @(isToday ? "today-circle" : "")">@date.Day</div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        <!-- Scrollable time grid -->
+        <div class="time-grid-scroll" id="timeGridScroll">
+            <div class="time-grid" style="height:@(TotalMin)px;">
+
+                <!-- Time gutter -->
+                <div class="time-gutter" style="height:@(TotalMin)px;position:relative;">
+                    @for (int h = StartHour; h <= EndHour; h++)
+                    {
+                        double y = (h * 60.0 - PoolOpen.TotalMinutes);
+                        if (y < 0 || y > TotalMin + 0.5) continue;
+                        <span class="time-label" style="top:@(y)px;">
+                            @(new DateTime(2000,1,1,h%24,0,0).ToString("h tt").ToLower())
+                        </span>
+                    }
+                </div>
+
+                <!-- Day columns -->
+                @for (int c = 0; c < 7; c++)
+                {
+                    var date  = _weekStart.AddDays(c);
+                    bool isToday = date.Date == DateTime.Today;
+                    var colRes = _allReservations.Where(r => r.Date.Date == date.Date).ToList();
+
+                    <div class="day-col @(isToday ? "today-col" : "")" style="height:@(TotalMin)px;">
+
+                        <!-- Hour/half-hour lines -->
+                        @for (int h = StartHour; h <= EndHour; h++)
+                        {
+                            double y = h * 60.0 - PoolOpen.TotalMinutes;
+                            if (y >= 0 && y <= TotalMin + 0.5)
+                            {
+                                <div class="hour-line" style="top:@(y)px;"></div>
+                            }
+                            if (h < EndHour)
+                            {
+                                double yh = y + 30;
+                                if (yh <= TotalMin)
+                                {
+                                    <div class="half-line" style="top:@(yh)px;"></div>
+                                }
+                            }
+                        }
+
+                        <!-- Reservation blocks -->
+                        @foreach (var res in colRes)
+                        {
+                            var blockStart = res.StartTime < PoolOpen  ? PoolOpen  : res.StartTime;
+                            var blockEnd   = res.EndTime   > PoolClose ? PoolClose : res.EndTime;
+                            if (blockEnd <= blockStart) continue;
+                            double top    = (blockStart - PoolOpen).TotalMinutes;
+                            double height = (blockEnd - blockStart).TotalMinutes - 2;
+                            if (height < 4) height = 4;
+                            <div class="res-block" style="top:@(top)px;height:@(height)px;">
+                                @if (height >= 16)
+                                {
+                                    <div class="res-time">@res.TimeRangeDisplay</div>
+                                }
+                                @if (height >= 30)
+                                {
+                                    <div class="res-label">Reserved</div>
+                                }
+                            </div>
+                        }
+
+                        <!-- Current time indicator -->
+                        @if (isToday && _now.TimeOfDay >= PoolOpen && _now.TimeOfDay <= PoolClose)
+                        {
+                            double ty = (_now.TimeOfDay - PoolOpen).TotalMinutes;
+                            <div class="time-dot"  style="top:@(ty)px;"></div>
+                            <div class="time-line" style="top:@(ty)px;"></div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Action buttons -->
+<div class="action-footer">
+    <button class="btn-pool" @onclick='() => Nav.NavigateTo("/reserve")'>🏊 Reserve a Time Slot</button>
+    <button class="btn-pool-secondary" @onclick='() => Nav.NavigateTo("/manage")'>⚙ Manage My Reservation</button>
+</div>
+
+@code {
+    private TimeSpan PoolOpen;
+    private TimeSpan PoolClose;
+    private DateTime _weekStart;
+    private DateTime _now;
+    private List<Reservation> _allReservations = [];
+
+    private int    TotalMin  => (int)(PoolClose - PoolOpen).TotalMinutes;
+    private int    StartHour => (int)Math.Floor(PoolOpen.TotalHours);
+    private int    EndHour   => (int)Math.Ceiling(PoolClose.TotalHours);
+
+    private static DateTime GetWeekStart(DateTime d)
+    {
+        int diff = ((int)d.DayOfWeek - (int)DayOfWeek.Sunday + 7) % 7;
+        return d.Date.AddDays(-diff);
+    }
+
+    private DateTime CurrentWeekStart => GetWeekStart(DateTime.Today);
+    private bool CanGoPrev => _weekStart > CurrentWeekStart;
+    private bool CanGoNext => _weekStart < CurrentWeekStart.AddDays(14);
+
+    private string WeekLabel
+    {
+        get
+        {
+            var end = _weekStart.AddDays(6);
+            return _weekStart.Month == end.Month
+                ? $"{_weekStart:MMMM d} \u2013 {end:d, yyyy}"
+                : $"{_weekStart:MMM d} \u2013 {end:MMM d, yyyy}";
+        }
+    }
+
+    private string PoolHoursLabel =>
+        $"Pool hours: {DateTime.Today.Add(PoolOpen):h:mm tt} \u2013 {DateTime.Today.Add(PoolClose):h:mm tt}";
+
+    protected override void OnInitialized()
+    {
+        (PoolOpen, PoolClose) = Db.GetPoolHours();
+        _weekStart = CurrentWeekStart;
+        _now = DateTime.Now;
+        LoadReservations();
+    }
+
+    private void LoadReservations()
+    {
+        // Load current week + buffer
+        _allReservations = Db.GetReservationsForRange(_weekStart, _weekStart.AddDays(6));
+        _now = DateTime.Now;
+    }
+
+    private void PrevWeek()
+    {
+        if (!CanGoPrev) return;
+        _weekStart = _weekStart.AddDays(-7);
+        LoadReservations();
+    }
+
+    private void NextWeek()
+    {
+        if (!CanGoNext) return;
+        _weekStart = _weekStart.AddDays(7);
+        LoadReservations();
+    }
+
+    private void GoToday()
+    {
+        _weekStart = CurrentWeekStart;
+        LoadReservations();
+    }
+
+    private void GoAdmin() => Nav.NavigateTo("/admin");
+}

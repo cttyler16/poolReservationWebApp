@@ -1,0 +1,84 @@
+@page "/confirmation"
+@rendermode InteractiveServer
+@inject ConfirmationState ConfState
+@inject NavigationManager Nav
+
+<PageTitle>Reservation Confirmed</PageTitle>
+
+@if (_reservation is null)
+{
+    <div style="text-align:center;padding:40px;">
+        <p>No confirmation to display. <a href="/">Return home</a></p>
+    </div>
+}
+else
+{
+    <div class="confirm-card">
+        <div class="confirm-success-header">
+            <div style="font-size:2.5rem;margin-bottom:8px;">✅</div>
+            <h2 style="margin:0;font-size:1.4rem;font-weight:700;">Reservation Confirmed!</h2>
+            <p style="margin:6px 0 0;opacity:.85;font-size:0.875rem;">
+                @_reservation.Date.ToString("dddd, MMMM d, yyyy") &nbsp;·&nbsp; @_reservation.TimeRangeDisplay
+            </p>
+        </div>
+
+        <div style="padding:20px 24px;">
+
+            <div class="banner banner-warn" style="margin-bottom:16px;font-size:0.82rem;">
+                ⚠ Save your confirmation code and PIN — you'll need them to manage or cancel your reservation.
+            </div>
+
+            <!-- Code + PIN -->
+            <div class="confirm-code-box">
+                <div style="font-size:0.75rem;font-weight:600;color:#065F46;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Confirmation Code</div>
+                <div class="confirm-code">@_reservation.ConfirmationCode</div>
+                <div style="font-size:0.75rem;font-weight:600;color:#0F766E;text-transform:uppercase;letter-spacing:.06em;margin:10px 0 4px;">Your PIN</div>
+                <div class="confirm-pin">@_pin</div>
+            </div>
+
+            <!-- Reservation details -->
+            <div style="margin-top:16px;">
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#0077B6;margin-bottom:8px;">Reservation Details</div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Date</span>
+                    <span class="confirm-detail-value">@_reservation.Date.ToString("dddd, MMMM d, yyyy")</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Time</span>
+                    <span class="confirm-detail-value">@_reservation.TimeRangeDisplay</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Duration</span>
+                    <span class="confirm-detail-value">@_reservation.DurationDisplay</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Family</span>
+                    <span class="confirm-detail-value">@_reservation.FamilyName</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Contact</span>
+                    <span class="confirm-detail-value">@_reservation.ContactName &nbsp;·&nbsp; @_reservation.Phone</span>
+                </div>
+            </div>
+
+            <div style="margin-top:20px;text-align:center;">
+                <button class="btn-pool" @onclick='() => Nav.NavigateTo("/")'>Back to Calendar</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private Reservation? _reservation;
+    private string _pin = "";
+
+    protected override void OnInitialized()
+    {
+        if (ConfState.HasData)
+        {
+            var (r, pin) = ConfState.TakeAndClear();
+            _reservation = r;
+            _pin = pin;
+        }
+    }
+}

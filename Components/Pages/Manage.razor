@@ -1,0 +1,130 @@
+@page "/manage"
+@rendermode InteractiveServer
+@inject DatabaseHelper Db
+@inject NavigationManager Nav
+
+<PageTitle>Manage My Reservation</PageTitle>
+
+<div class="form-card">
+    <div class="form-header">
+        <h2>⚙ Manage My Reservation</h2>
+        <p>Look up your reservation to view details or cancel</p>
+    </div>
+
+    <div class="form-body">
+
+        @if (_reservation is null)
+        {
+            <!-- Lookup form -->
+            <div class="form-section-label">Look Up Your Reservation</div>
+
+            <label class="form-label-text">Confirmation Code *</label>
+            <input class="form-input" @bind="_code" maxlength="8"
+                   style="text-transform:uppercase;letter-spacing:2px;font-weight:600;"
+                   placeholder="e.g. A1B2C3D4" />
+
+            <label class="form-label-text">PIN *</label>
+            <input class="form-input" type="password" @bind="_pin" maxlength="20" placeholder="Your 6-character PIN" />
+
+            @if (!string.IsNullOrEmpty(_lookupError))
+            {
+                <div class="banner banner-error" style="margin-top:10px;">@_lookupError</div>
+            }
+        }
+        else if (!_cancelled)
+        {
+            <!-- Reservation details -->
+            <div class="form-section-label">Your Reservation</div>
+
+            <div style="margin-bottom:12px;">
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Date</span>
+                    <span class="confirm-detail-value">@_reservation.Date.ToString("dddd, MMMM d, yyyy")</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Time</span>
+                    <span class="confirm-detail-value">@_reservation.TimeRangeDisplay</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Duration</span>
+                    <span class="confirm-detail-value">@_reservation.DurationDisplay</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Family</span>
+                    <span class="confirm-detail-value">@_reservation.FamilyName</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Contact</span>
+                    <span class="confirm-detail-value">@_reservation.ContactName</span>
+                </div>
+                <div class="confirm-detail-row">
+                    <span class="confirm-detail-label">Phone</span>
+                    <span class="confirm-detail-value">@_reservation.Phone</span>
+                </div>
+            </div>
+
+            @if (!_showConfirmCancel)
+            {
+                <button class="btn-pool-danger" @onclick="() => _showConfirmCancel = true">Cancel This Reservation</button>
+            }
+            else
+            {
+                <div class="banner banner-warn" style="margin-bottom:10px;">
+                    Are you sure you want to cancel your reservation on <strong>@_reservation.Date.ToString("MMMM d")</strong> (@_reservation.TimeRangeDisplay)?
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <button class="btn-pool-danger" @onclick="ConfirmCancel">Yes, Cancel It</button>
+                    <button class="btn-pool-secondary" @onclick="() => _showConfirmCancel = false">Keep It</button>
+                </div>
+            }
+        }
+        else
+        {
+            <!-- Cancelled confirmation -->
+            <div class="banner banner-success" style="margin-top:8px;">
+                ✅ Your reservation has been cancelled successfully.
+            </div>
+        }
+    </div>
+
+    <div class="form-footer">
+        <button class="btn-pool-secondary" @onclick='() => Nav.NavigateTo("/")'>
+            @(_cancelled ? "Back to Calendar" : "Cancel")
+        </button>
+        @if (_reservation is null)
+        {
+            <button class="btn-pool" @onclick="Lookup">Look Up</button>
+        }
+    </div>
+</div>
+
+@code {
+    private string _code = "";
+    private string _pin  = "";
+    private string _lookupError = "";
+    private Reservation? _reservation;
+    private bool _showConfirmCancel;
+    private bool _cancelled;
+
+    private void Lookup()
+    {
+        _lookupError = "";
+        if (string.IsNullOrWhiteSpace(_code)) { _lookupError = "Please enter your confirmation code."; return; }
+        if (string.IsNullOrWhiteSpace(_pin))  { _lookupError = "Please enter your PIN."; return; }
+
+        var r = Db.GetByConfirmationCode(_code);
+        if (r is null) { _lookupError = "Confirmation code not found. Please check and try again."; return; }
+        if (!SecurityHelper.VerifyPin(_pin, r.PinSalt, r.PinHash))
+        { _lookupError = "Incorrect PIN. Please try again."; _pin = ""; return; }
+
+        _reservation = r;
+    }
+
+    private void ConfirmCancel()
+    {
+        if (_reservation is null) return;
+        Db.DeleteReservation(_reservation.Id);
+        _cancelled = true;
+        _showConfirmCancel = false;
+    }
+}

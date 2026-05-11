@@ -1,0 +1,269 @@
+@page "/reserve"
+@rendermode InteractiveServer
+@inject DatabaseHelper Db
+@inject ConfirmationState ConfState
+@inject NavigationManager Nav
+
+<PageTitle>Reserve a Time Slot</PageTitle>
+
+<div class="form-card">
+    <!-- Header -->
+    <div class="form-header">
+        <h2>Reserve a Time Slot</h2>
+        <p>@(_selectedDate.ToString("dddd, MMMM d, yyyy"))</p>
+    </div>
+
+    <div class="form-body">
+
+        <!-- Date -->
+        <div class="form-section-label">Reservation Date</div>
+        <input type="date" class="form-input"
+               value="@_selectedDate.ToString("yyyy-MM-dd")"
+               min="@DateTime.Today.ToString("yyyy-MM-dd")"
+               max="@DateTime.Today.AddDays(14).ToString("yyyy-MM-dd")"
+               @onchange="OnDateChanged" />
+
+        <!-- Time -->
+        <div class="form-section-label" style="margin-top:14px;">Reservation Time</div>
+        <div style="display:flex;gap:12px;">
+            <div style="flex:1;">
+                <label class="form-label-text">Start Time *</label>
+                <select class="form-select" @onchange="OnStartChanged">
+                    @foreach (var (label, ts) in _startOptions)
+                    {
+                        <option value="@ts.ToString()" selected="@(ts == _startTime)">@label</option>
+                    }
+                </select>
+            </div>
+            <div style="flex:1;">
+                <label class="form-label-text">Duration *</label>
+                <select class="form-select" @onchange="OnDurationChanged">
+                    <option value="1.0"  selected="@(_durationHours == 1.0)">1 hour</option>
+                    <option value="1.5"  selected="@(_durationHours == 1.5)">1.5 hours</option>
+                    <option value="2.0"  selected="@(_durationHours == 2.0)">2 hours</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- End time preview -->
+        @if (_endTime > _startTime)
+        {
+            var overClose = _endTime > PoolClose;
+            <div class="banner @(overClose ? "banner-error" : "banner-info")" style="margin-top:8px;">
+                @if (overClose)
+                {
+                    <span>⚠ Extends past closing time (@DateTime.Today.Add(PoolClose).ToString("h:mm tt")). Choose an earlier start or shorter duration.</span>
+                }
+                else
+                {
+                    <span>Your slot: @DateTime.Today.Add(_startTime).ToString("h:mm tt") – @DateTime.Today.Add(_endTime).ToString("h:mm tt")</span>
+                }
+            </div>
+        }
+
+        @if (_hasConflict)
+        {
+            <div class="banner banner-warn">⚠ This time overlaps an existing reservation. Please choose a different time.</div>
+        }
+
+        <!-- Day schedule -->
+        <div class="form-section-label" style="margin-top:14px;">Selected Date's Schedule</div>
+        <div class="schedule-mini">
+            <div class="schedule-mini-inner">
+                @foreach (var block in _scheduleBlocks)
+                {
+                    <div class="sched-block @(block.IsReserved ? "reserved" : "available")">
+                        <div class="sched-dot @(block.IsReserved ? "reserved" : "available")"></div>
+                        <div>
+                            <div style="font-weight:600;color:@(block.IsReserved ? "#BE123C" : "#0F766E")">@block.TimeRangeDisplay</div>
+                            <div style="font-size:0.78rem;color:#6B7280;">@(block.IsReserved ? "Reserved" : $"Available – {block.DurationDisplay}")</div>
+                        </div>
+                    </div>
+                }
+                @if (!_scheduleBlocks.Any())
+                {
+                    <div class="sched-block available">
+                        <div class="sched-dot available"></div>
+                        <div style="color:#0F766E;font-weight:600;">Fully available</div>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <hr style="margin:14px 0 8px;" />
+
+        <!-- Contact info -->
+        <div class="form-section-label">Your Information</div>
+
+        <label class="form-label-text">Family Name *</label>
+        <input class="form-input" @bind="_familyName" maxlength="100" placeholder="e.g. Smith" />
+
+        <label class="form-label-text">Your Name (Contact Person) *</label>
+        <input class="form-input" @bind="_contactName" maxlength="100" placeholder="e.g. Jane Smith" />
+
+        <label class="form-label-text">Phone Number *</label>
+        <input class="form-input" @bind="_phone" maxlength="25" placeholder="e.g. (555) 123-4567" />
+
+        <label class="form-label-text">Email Address *</label>
+        <input class="form-input" @bind="_email" type="email" maxlength="200" placeholder="e.g. jane@example.com" />
+
+        @if (!string.IsNullOrEmpty(_errorMsg))
+        {
+            <div class="banner banner-error" style="margin-top:12px;">@_errorMsg</div>
+        }
+    </div>
+
+    <div class="form-footer">
+        <button class="btn-pool-secondary" @onclick='() => Nav.NavigateTo("/")'>Cancel</button>
+        <button class="btn-pool" @onclick="Submit" disabled="@(!CanSubmit)">Confirm Reservation ✓</button>
+    </div>
+</div>
+
+@code {
+    private TimeSpan PoolOpen;
+    private TimeSpan PoolClose;
+
+    private DateTime _selectedDate = DateTime.Today;
+    private TimeSpan _startTime;
+    private double   _durationHours = 1.0;
+    private TimeSpan _endTime;
+    private bool     _hasConflict;
+    private bool     _overClose;
+
+    private string _familyName  = "";
+    private string _contactName = "";
+    private string _phone       = "";
+    private string _email       = "";
+    private string _errorMsg    = "";
+
+    private List<(string label, TimeSpan ts)> _startOptions = [];
+    private List<ScheduleBlock> _scheduleBlocks = [];
+
+    private bool CanSubmit => !_hasConflict && !_overClose && _endTime > _startTime;
+
+    protected override void OnInitialized()
+    {
+        (PoolOpen, PoolClose) = Db.GetPoolHours();
+        BuildStartOptions();
+        RefreshSchedule();
+        UpdateEndTime();
+    }
+
+    private void BuildStartOptions()
+    {
+        _startOptions.Clear();
+        var latest = PoolClose - TimeSpan.FromHours(1);
+        var t = PoolOpen;
+        while (t <= latest)
+        {
+            _startOptions.Add((DateTime.Today.Add(t).ToString("h:mm tt"), t));
+            t = t.Add(TimeSpan.FromMinutes(30));
+        }
+        _startTime = _startOptions.FirstOrDefault().ts;
+    }
+
+    private void OnDateChanged(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), out var d))
+        {
+            // Clamp to allowed range
+            if (d < DateTime.Today) d = DateTime.Today;
+            if (d > DateTime.Today.AddDays(14)) d = DateTime.Today.AddDays(14);
+            _selectedDate = d;
+            RefreshSchedule();
+            UpdateEndTime();
+        }
+    }
+
+    private void OnStartChanged(ChangeEventArgs e)
+    {
+        if (TimeSpan.TryParse(e.Value?.ToString(), out var ts))
+        {
+            _startTime = ts;
+            UpdateEndTime();
+        }
+    }
+
+    private void OnDurationChanged(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var d))
+        {
+            _durationHours = d;
+            UpdateEndTime();
+        }
+    }
+
+    private void UpdateEndTime()
+    {
+        _endTime   = _startTime + TimeSpan.FromHours(_durationHours);
+        _overClose = _endTime > PoolClose;
+        _hasConflict = !_overClose && Db.HasConflict(_selectedDate, _startTime, _endTime);
+    }
+
+    private void RefreshSchedule()
+    {
+        _scheduleBlocks.Clear();
+        var reservations = Db.GetReservationsForDate(_selectedDate)
+                              .OrderBy(r => r.StartTime)
+                              .ToList();
+        var cursor = PoolOpen;
+        foreach (var res in reservations)
+        {
+            if (res.StartTime > cursor)
+                _scheduleBlocks.Add(new ScheduleBlock { StartTime = cursor, EndTime = res.StartTime, IsReserved = false });
+            _scheduleBlocks.Add(new ScheduleBlock { StartTime = res.StartTime, EndTime = res.EndTime, IsReserved = true, Reservation = res });
+            cursor = res.EndTime;
+        }
+        if (cursor < PoolClose)
+            _scheduleBlocks.Add(new ScheduleBlock { StartTime = cursor, EndTime = PoolClose, IsReserved = false });
+    }
+
+    private void Submit()
+    {
+        _errorMsg = "";
+
+        if (string.IsNullOrWhiteSpace(_familyName))  { _errorMsg = "Please enter your family name.";           return; }
+        if (string.IsNullOrWhiteSpace(_contactName)) { _errorMsg = "Please enter the contact person's name."; return; }
+        if (string.IsNullOrWhiteSpace(_phone))       { _errorMsg = "Please enter a phone number.";            return; }
+        if (!System.Text.RegularExpressions.Regex.IsMatch(_phone.Trim(), @"^[\d\s\-\+\(\)\.]{7,25}$"))
+            { _errorMsg = "Please enter a valid phone number."; return; }
+        if (string.IsNullOrWhiteSpace(_email))       { _errorMsg = "Please enter an email address.";          return; }
+        if (!System.Text.RegularExpressions.Regex.IsMatch(_email.Trim(), @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+            { _errorMsg = "Please enter a valid email address."; return; }
+
+        // Re-check conflict at submit time
+        if (Db.HasConflict(_selectedDate, _startTime, _endTime))
+        {
+            _errorMsg = "This slot was just taken. Please pick a different time.";
+            UpdateEndTime();
+            RefreshSchedule();
+            return;
+        }
+
+        var pin  = SecurityHelper.GeneratePin();
+        var salt = SecurityHelper.GenerateSalt();
+        var code = SecurityHelper.GenerateConfirmationCode();
+
+        var reservation = new Reservation
+        {
+            FamilyName       = _familyName.Trim(),
+            ContactName      = _contactName.Trim(),
+            Phone            = _phone.Trim(),
+            Email            = _email.Trim().ToLowerInvariant(),
+            Date             = _selectedDate,
+            StartTime        = _startTime,
+            EndTime          = _endTime,
+            PinHash          = SecurityHelper.HashPin(pin, salt),
+            PinSalt          = salt,
+            ConfirmationCode = code,
+            CreatedAt        = DateTime.UtcNow
+        };
+
+        Db.CreateReservation(reservation);
+
+        ConfState.Set(reservation, pin);
+        Nav.NavigateTo("/confirmation");
+    }
+}

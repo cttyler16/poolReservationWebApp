@@ -1,0 +1,322 @@
+@page "/admin"
+@rendermode InteractiveServer
+@inject DatabaseHelper Db
+@inject AdminSessionService AdminSession
+@inject NavigationManager Nav
+
+<PageTitle>Admin Panel</PageTitle>
+
+@if (!AdminSession.IsLoggedIn)
+{
+    <!-- Login gate -->
+    <div class="form-card">
+        <div class="form-header">
+            <h2>🔒 Admin Login</h2>
+            <p>Enter the admin password to continue</p>
+        </div>
+        <div class="form-body">
+            <label class="form-label-text">Password</label>
+            <input class="form-input" type="password" @bind="_loginPassword"
+                   @onkeydown="OnLoginKeyDown" placeholder="Admin password" />
+
+            @if (!string.IsNullOrEmpty(_loginError))
+            {
+                <div class="banner banner-error" style="margin-top:10px;">@_loginError</div>
+            }
+        </div>
+        <div class="form-footer">
+            <button class="btn-pool-secondary" @onclick='() => Nav.NavigateTo("/")'>Cancel</button>
+            <button class="btn-pool" @onclick="TryLogin">Login</button>
+        </div>
+    </div>
+}
+else
+{
+    <!-- Admin panel -->
+    <div class="admin-card">
+        <div class="form-header" style="display:flex;align-items:center;justify-content:space-between;">
+            <div>
+                <h2 style="margin:0;font-size:1.25rem;">🛠 Admin Panel</h2>
+            </div>
+            <button class="btn-admin-header" @onclick="Logout">Logout</button>
+        </div>
+
+        @if (_showDefaultPwWarning)
+        {
+            <div class="banner banner-default-pw" style="margin:10px 16px 0;border-radius:6px;">
+                ⚠ You are using the default password. Please change it in Settings.
+            </div>
+        }
+
+        <!-- Tabs -->
+        <div class="admin-tabs">
+            <button class="admin-tab @(_tab == "schedule" ? "active" : "")" @onclick='() => SetTab("schedule")'>📅 Schedule</button>
+            <button class="admin-tab @(_tab == "settings" ? "active" : "")" @onclick='() => SetTab("settings")'>⚙ Settings</button>
+        </div>
+
+        <div class="admin-tab-body">
+
+            @if (_tab == "schedule")
+            {
+                <!-- Date navigation -->
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+                    <button class="btn-pool-secondary" style="padding:6px 12px;" @onclick="SchedPrev">‹</button>
+                    <input type="date" class="form-input" style="width:180px;"
+                           value="@_schedDate.ToString("yyyy-MM-dd")"
+                           @onchange="OnSchedDateChanged" />
+                    <button class="btn-pool-secondary" style="padding:6px 12px;" @onclick="SchedNext">›</button>
+                    <span style="font-weight:600;color:#374151;">@SchedDayLabel</span>
+                    <span style="color:#6B7280;font-size:0.82rem;margin-left:auto;">@_schedReservations.Count reservation@(_schedReservations.Count == 1 ? "" : "s")</span>
+                </div>
+
+                @if (!_schedReservations.Any())
+                {
+                    <div style="text-align:center;color:#9CA3AF;padding:32px 0;">No reservations for this day.</div>
+                }
+                else
+                {
+                    @foreach (var res in _schedReservations)
+                    {
+                        <div class="res-row">
+                            <div class="res-row-time">@res.TimeRangeDisplay</div>
+                            <div style="flex:1;">
+                                <div class="res-row-fam">@res.FamilyName family</div>
+                                <div class="res-row-contact">@res.ContactName &nbsp;·&nbsp; @res.Phone &nbsp;·&nbsp; @res.Email</div>
+                            </div>
+                            @if (_confirmDeleteId == res.Id)
+                            {
+                                <div style="display:flex;gap:6px;align-items:center;">
+                                    <span style="font-size:0.78rem;color:#92400E;">Delete?</span>
+                                    <button class="btn-pool-danger" style="padding:4px 10px;font-size:0.78rem;" @onclick="() => DeleteReservation(res.Id)">Yes</button>
+                                    <button class="btn-pool-secondary" style="padding:4px 10px;font-size:0.78rem;" @onclick="() => _confirmDeleteId = null">No</button>
+                                </div>
+                            }
+                            else
+                            {
+                                <button class="btn-pool-danger" style="padding:5px 12px;font-size:0.78rem;" @onclick="() => _confirmDeleteId = res.Id">Delete</button>
+                            }
+                        </div>
+                    }
+                }
+            }
+
+            @if (_tab == "settings")
+            {
+                <!-- Pool hours -->
+                <div style="font-weight:700;color:#374151;margin-bottom:10px;">Pool Hours</div>
+                <div style="display:flex;gap:12px;margin-bottom:10px;">
+                    <div style="flex:1;">
+                        <label class="form-label-text" style="margin-top:0;">Opening Time</label>
+                        <select class="form-select" @onchange="OnOpenChanged">
+                            @foreach (var (label, ts) in _hourOptions)
+                            {
+                                <option value="@ts.ToString()" selected="@(ts == _poolOpen)">@label</option>
+                            }
+                        </select>
+                    </div>
+                    <div style="flex:1;">
+                        <label class="form-label-text" style="margin-top:0;">Closing Time</label>
+                        <select class="form-select" @onchange="OnCloseChanged">
+                            @foreach (var (label, ts) in _hourOptions)
+                            {
+                                <option value="@ts.ToString()" selected="@(ts == _poolClose)">@label</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+                @if (!string.IsNullOrEmpty(_hoursError))   { <div class="banner banner-error">@_hoursError</div> }
+                @if (!string.IsNullOrEmpty(_hoursSuccess)) { <div class="banner banner-success">@_hoursSuccess</div> }
+                <button class="btn-pool" style="margin-top:6px;" @onclick="SaveHours">Save Pool Hours</button>
+
+                <hr style="margin:20px 0;" />
+
+                <!-- Change password -->
+                <div style="font-weight:700;color:#374151;margin-bottom:10px;">Change Admin Password</div>
+                <label class="form-label-text" style="margin-top:0;">Current Password</label>
+                <input class="form-input" type="password" @bind="_pwCurrent" placeholder="Current password" />
+                <label class="form-label-text">New Password</label>
+                <input class="form-input" type="password" @bind="_pwNew" placeholder="At least 6 characters" />
+                <label class="form-label-text">Confirm New Password</label>
+                <input class="form-input" type="password" @bind="_pwConfirm" placeholder="Repeat new password" />
+                @if (!string.IsNullOrEmpty(_pwError))   { <div class="banner banner-error" style="margin-top:8px;">@_pwError</div> }
+                @if (!string.IsNullOrEmpty(_pwSuccess)) { <div class="banner banner-success" style="margin-top:8px;">@_pwSuccess</div> }
+                <button class="btn-pool" style="margin-top:10px;" @onclick="ChangePassword">Change Password</button>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    // Login
+    private string _loginPassword = "";
+    private string _loginError    = "";
+
+    // Tabs
+    private string _tab = "schedule";
+
+    // Schedule tab
+    private DateTime _schedDate = DateTime.Today;
+    private List<Reservation> _schedReservations = [];
+    private int? _confirmDeleteId;
+
+    // Settings tab – pool hours
+    private TimeSpan _poolOpen;
+    private TimeSpan _poolClose;
+    private List<(string label, TimeSpan ts)> _hourOptions = [];
+    private string _hoursError   = "";
+    private string _hoursSuccess = "";
+
+    // Settings tab – password
+    private string _pwCurrent = "";
+    private string _pwNew     = "";
+    private string _pwConfirm = "";
+    private string _pwError   = "";
+    private string _pwSuccess = "";
+
+    private bool _showDefaultPwWarning;
+
+    private string SchedDayLabel => _schedDate.Date == DateTime.Today ? "Today"
+        : _schedDate.Date == DateTime.Today.AddDays(1) ? "Tomorrow"
+        : _schedDate.ToString("dddd, MMMM d");
+
+    protected override void OnInitialized()
+    {
+        if (AdminSession.IsLoggedIn) InitAdminData();
+    }
+
+    private void InitAdminData()
+    {
+        (_poolOpen, _poolClose) = Db.GetPoolHours();
+        BuildHourOptions();
+        LoadSchedule();
+        CheckDefaultPassword();
+    }
+
+    private void CheckDefaultPassword()
+    {
+        var hash = Db.GetSetting("admin_hash");
+        var salt = Db.GetSetting("admin_salt");
+        _showDefaultPwWarning = !string.IsNullOrEmpty(hash) && !string.IsNullOrEmpty(salt)
+            && SecurityHelper.VerifyPin("admin1234", salt, hash);
+    }
+
+    private void BuildHourOptions()
+    {
+        _hourOptions.Clear();
+        var t = TimeSpan.FromHours(5);
+        while (t <= TimeSpan.FromHours(23))
+        {
+            _hourOptions.Add((DateTime.Today.Add(t).ToString("h:mm tt"), t));
+            t = t.Add(TimeSpan.FromMinutes(30));
+        }
+    }
+
+    private void LoadSchedule()
+    {
+        _schedReservations = Db.GetReservationsForDate(_schedDate);
+        _confirmDeleteId = null;
+    }
+
+    // ── Login ──
+    private void TryLogin()
+    {
+        _loginError = "";
+        if (string.IsNullOrEmpty(_loginPassword)) { _loginError = "Please enter the admin password."; return; }
+
+        var hash = Db.GetSetting("admin_hash");
+        var salt = Db.GetSetting("admin_salt");
+
+        if (string.IsNullOrEmpty(hash) || string.IsNullOrEmpty(salt))
+        { _loginError = "Admin credentials not configured."; return; }
+
+        if (SecurityHelper.VerifyPin(_loginPassword, salt, hash))
+        {
+            AdminSession.Login();
+            _loginPassword = "";
+            InitAdminData();
+        }
+        else
+        {
+            _loginError = "Incorrect password. Please try again.";
+            _loginPassword = "";
+        }
+    }
+
+    private async Task OnLoginKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") TryLogin();
+    }
+
+    private void Logout()
+    {
+        AdminSession.Logout();
+        Nav.NavigateTo("/");
+    }
+
+    private void SetTab(string tab)
+    {
+        _tab = tab;
+        _hoursError = _hoursSuccess = _pwError = _pwSuccess = "";
+    }
+
+    // ── Schedule ──
+    private void OnSchedDateChanged(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), out var d))
+        {
+            _schedDate = d;
+            LoadSchedule();
+        }
+    }
+    private void SchedPrev() { _schedDate = _schedDate.AddDays(-1); LoadSchedule(); }
+    private void SchedNext() { _schedDate = _schedDate.AddDays(1);  LoadSchedule(); }
+
+    private void DeleteReservation(int id)
+    {
+        Db.DeleteReservation(id);
+        LoadSchedule();
+    }
+
+    // ── Settings – hours ──
+    private void OnOpenChanged(ChangeEventArgs e)
+    {
+        if (TimeSpan.TryParse(e.Value?.ToString(), out var ts)) _poolOpen = ts;
+    }
+    private void OnCloseChanged(ChangeEventArgs e)
+    {
+        if (TimeSpan.TryParse(e.Value?.ToString(), out var ts)) _poolClose = ts;
+    }
+
+    private void SaveHours()
+    {
+        _hoursError = _hoursSuccess = "";
+        if (_poolOpen >= _poolClose)          { _hoursError = "Opening time must be earlier than closing time."; return; }
+        if ((_poolClose - _poolOpen).TotalHours < 1) { _hoursError = "Pool must be open for at least 1 hour."; return; }
+        Db.SavePoolHours(_poolOpen, _poolClose);
+        _hoursSuccess = "Pool hours saved successfully.";
+    }
+
+    // ── Settings – password ──
+    private void ChangePassword()
+    {
+        _pwError = _pwSuccess = "";
+        if (string.IsNullOrEmpty(_pwCurrent)) { _pwError = "Please enter your current password."; return; }
+
+        var storedHash = Db.GetSetting("admin_hash");
+        var storedSalt = Db.GetSetting("admin_salt");
+        if (!SecurityHelper.VerifyPin(_pwCurrent, storedSalt, storedHash))
+        { _pwError = "Current password is incorrect."; _pwCurrent = ""; return; }
+
+        if (string.IsNullOrEmpty(_pwNew))    { _pwError = "New password cannot be empty."; return; }
+        if (_pwNew.Length < 6)               { _pwError = "New password must be at least 6 characters."; return; }
+        if (_pwNew != _pwConfirm)            { _pwError = "New passwords do not match."; return; }
+
+        var newSalt = SecurityHelper.GenerateSalt();
+        var newHash = SecurityHelper.HashPin(_pwNew, newSalt);
+        Db.SaveAdminCredentials(newHash, newSalt);
+
+        _pwCurrent = _pwNew = _pwConfirm = "";
+        _pwSuccess = "Password changed successfully.";
+        _showDefaultPwWarning = false;
+    }
+}
